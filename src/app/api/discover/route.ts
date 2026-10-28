@@ -74,10 +74,12 @@ export async function POST(request: Request) {
 
     return response;
   } catch (err: unknown) {
+    console.error("[DISCOVER ERROR]:", err);
     if (err instanceof SecurityError) {
       return NextResponse.json({ error: err.message }, { status: 403 });
     }
     const message = err instanceof Error ? err.message : "Failed to discover documentation pages.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    const isClientError = /resolve DNS|Invalid domain|Invalid URL|ECONNREFUSED|ENOTFOUND|timed out/i.test(message);
+    return NextResponse.json({ error: message }, { status: isClientError ? 400 : 500 });
   }
 }
