@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { DiscoveredPage } from "./crawler";
 
 export type JobState =
@@ -36,12 +38,61 @@ export interface JobRecord {
   expiresAt: number;
 }
 
-// In-memory store for Version 1
-const jobsMap = new Map<string, JobRecord>();
-const tokenToJobMap = new Map<string, string>(); // token -> jobId
-
 // 1 hour retention
 const RETENTION_MS = 60 * 60 * 1000;
+
+// Disk persistence paths
+const STORAGE_DIR = path.join(process.cwd(), ".docu_storage");
+const JOBS_DIR = path.join(STORAGE_DIR, "jobs");
+const DOWNLOADS_DIR = path.join(STORAGE_DIR, "downloads");
+const TOKENS_DIR = path.join(STORAGE_DIR, "tokens");
+
+function ensureStorageDirs(): void {
+  try {
+    if (!fs.existsSync(JOBS_DIR)) fs.mkdirSync(JOBS_DIR, { recursive: true });
+    if (!fs.existsSync(DOWNLOADS_DIR)) fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+    if (!fs.existsSync(TOKENS_DIR)) fs.mkdirSync(TOKENS_DIR, { recursive: true });
+  } catch {
+    // Non-fatal if filesystem is read-only
+  }
+}
+
+// Global in-memory cache shared across Next.js route bundles and reloads
+declare global {
+  // eslint-disable-next-line no-var
+  var __docu_jobs: Map<string, JobRecord> | undefined;
+  // eslint-disable-next-line no-var
+  var __docu_tokens: Map<string, string> | undefined;
+}
+
+const jobsMap: Map<string, JobRecord> =
+  globalThis.__docu_jobs ?? (globalThis.__docu_jobs = new Map());
+const tokenToJobMap: Map<string, string> =
+  globalThis.__docu_tokens ?? (globalThis.__docu_tokens = new Map());
+
+function persistJobToDisk(job: JobRecord): void {
+  try {
+    ensureStorageDirs();
+    const filePath = path.join(JOBS_DIR, `${job.id}.json`);
+    const { pdfBuffer, ...metadata } = job;
+    fs.writeFileSync(filePath, JSON.stringify(metadata), "utf-8");
+  } catch {
+    // Ignore disk write errors
+  }
+}
+
+function loadJobFromDisk(id: string): JobRecord | undefined {
+  try {
+    const filePath = path.join(JOBS_DIR, `${id}.json`);
+    if (fs.existsSync(filePath)) {
+      const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+      return data as JobRecord;
+    }
+  } catch {
+    // Ignore disk read errors
+  }
+  return undefined;
+}
 
 export function cleanupExpiredJobs(): void {
   const now = Date.now();
@@ -52,6 +103,30 @@ export function cleanupExpiredJobs(): void {
       }
       jobsMap.delete(id);
     }
+  }
+
+  // Also sweep disk storage for expired files
+  try {
+    if (fs.existsSync(TOKENS_DIR)) {
+      const files = fs.readdirSync(TOKENS_DIR);
+      for (const file of files) {
+        if (!file.endsWith(".json")) continue;
+        const tokenFilePath = path.join(TOKENS_DIR, file);
+        const stats = fs.statSync(tokenFilePath);
+        if (now - stats.mtimeMs > RETENTION_MS) {
+          const token = file.replace(/\.json$/, "");
+          const pdfPath = path.join(DOWNLOADS_DIR, `${token}.pdf`);
+          try {
+            if (fs.existsSync(pdfPath)) fs.unlinkSync(pdfPath);
+            fs.unlinkSync(tokenFilePath);
+          } catch {
+            // Ignore
+          }
+        }
+      }
+    }
+  } catch {
+    // Ignore cleanup errors
   }
 }
 
@@ -77,25 +152,44 @@ export function createJob(targetUrl: string): JobRecord {
   };
 
   jobsMap.set(id, job);
+  persistJobToDisk(job);
   return job;
 }
 
 export function getJob(id: string): JobRecord | undefined {
   cleanupExpiredJobs();
-  return jobsMap.get(id);
+  const memoryJob = jobsMap.get(id);
+  if (memoryJob) return memoryJob;
+
+  const diskJob = loadJobFromDisk(id);
+  if (diskJob && diskJob.expiresAt > Date.now()) {
+    jobsMap.set(id, diskJob);
+    if (diskJob.downloadToken) {
+      tokenToJobMap.set(diskJob.downloadToken, id);
+    }
+    return diskJob;
+  }
+  return undefined;
 }
 
 export function updateJob(id: string, updates: Partial<JobRecord>): JobRecord | undefined {
-  const job = jobsMap.get(id);
+  let job = jobsMap.get(id);
+  if (!job) {
+    job = loadJobFromDisk(id);
+  }
   if (!job) return undefined;
 
   Object.assign(job, updates);
   jobsMap.set(id, job);
+  persistJobToDisk(job);
   return job;
 }
 
 export function finalizeJobWithPDF(id: string, buffer: Buffer, fileName: string): JobRecord | undefined {
-  const job = jobsMap.get(id);
+  let job = jobsMap.get(id);
+  if (!job) {
+    job = loadJobFromDisk(id);
+  }
   if (!job) return undefined;
 
   const downloadToken = crypto.randomBytes(24).toString("hex");
@@ -106,20 +200,67 @@ export function finalizeJobWithPDF(id: string, buffer: Buffer, fileName: string)
   job.pdfBuffer = buffer;
   job.state = job.failedPages.length > 0 || job.warnings.length > 0 ? "completed_with_warnings" : "completed";
 
+  jobsMap.set(id, job);
   tokenToJobMap.set(downloadToken, id);
+  persistJobToDisk(job);
+
+  // Persist PDF binary and token mapping to disk
+  try {
+    ensureStorageDirs();
+    const pdfPath = path.join(DOWNLOADS_DIR, `${downloadToken}.pdf`);
+    fs.writeFileSync(pdfPath, buffer);
+
+    const tokenMetaPath = path.join(TOKENS_DIR, `${downloadToken}.json`);
+    fs.writeFileSync(
+      tokenMetaPath,
+      JSON.stringify({
+        jobId: id,
+        fileName,
+        fileSizeBytes: buffer.byteLength,
+        createdAt: Date.now(),
+      }),
+      "utf-8"
+    );
+  } catch {
+    // If disk write fails, in-memory cache remains active
+  }
+
   return job;
 }
 
 export function getPDFByDownloadToken(token: string): { fileName: string; buffer: Buffer } | undefined {
   cleanupExpiredJobs();
+
+  // 1. Check in-memory state
   const jobId = tokenToJobMap.get(token);
-  if (!jobId) return undefined;
+  if (jobId) {
+    const job = jobsMap.get(jobId);
+    if (job && job.pdfBuffer) {
+      return {
+        fileName: job.downloadFileName || "documentation-manual.pdf",
+        buffer: job.pdfBuffer,
+      };
+    }
+  }
 
-  const job = jobsMap.get(jobId);
-  if (!job || !job.pdfBuffer) return undefined;
+  // 2. Check disk storage (handles Next.js route isolation, hot reloads, worker restarts)
+  try {
+    ensureStorageDirs();
+    const pdfPath = path.join(DOWNLOADS_DIR, `${token}.pdf`);
+    const tokenMetaPath = path.join(TOKENS_DIR, `${token}.json`);
 
-  return {
-    fileName: job.downloadFileName || "documentation-manual.pdf",
-    buffer: job.pdfBuffer,
-  };
+    if (fs.existsSync(pdfPath)) {
+      const buffer = fs.readFileSync(pdfPath);
+      let fileName = "documentation-manual.pdf";
+      if (fs.existsSync(tokenMetaPath)) {
+        const meta = JSON.parse(fs.readFileSync(tokenMetaPath, "utf-8"));
+        if (meta.fileName) fileName = meta.fileName;
+      }
+      return { fileName, buffer };
+    }
+  } catch {
+    // Ignore disk read error and fallback to undefined
+  }
+
+  return undefined;
 }

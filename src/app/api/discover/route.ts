@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { validateUrlStructure, assertSafeDestination, SecurityError } from "@/lib/security";
+import { validateUrlStructure, assertSafeDestination, normalizeInputUrl, SecurityError } from "@/lib/security";
 import { discoverPages } from "@/lib/crawler";
 import { createJob, updateJob } from "@/lib/jobs";
 
 const DiscoverSchema = z.object({
-  url: z.string().min(1, "URL is required").url("Must be a valid URL"),
+  url: z.string().min(1, "URL is required"),
 });
 
 export async function POST(request: Request) {
@@ -20,7 +20,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const targetUrl = parsed.data.url;
+    const targetUrl = normalizeInputUrl(parsed.data.url);
 
     // Security validation: URL structure and SSRF check
     const validUrl = validateUrlStructure(targetUrl);

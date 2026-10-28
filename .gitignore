@@ -14,8 +14,9 @@
 # production
 /build
 
-# misc
-.DS_Store
+# temporary storage
+/.docu_storage/
+/tmp/
 *.pem
 
 # debug

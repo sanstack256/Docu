@@ -122,5 +122,14 @@ describe("End-to-End Pipeline Integration", () => {
     expect(download).toBeDefined();
     expect(download?.fileName).toBe("example-manual.pdf");
     expect(download?.buffer.subarray(0, 5).toString()).toBe("%PDF-");
+
+    // 6. Verify disk recovery resilience (even if in-memory cache is wiped)
+    if (globalThis.__docu_tokens) {
+      globalThis.__docu_tokens.delete(finalized!.downloadToken!);
+    }
+    const recoveredFromDisk = getPDFByDownloadToken(finalized!.downloadToken!);
+    expect(recoveredFromDisk).toBeDefined();
+    expect(recoveredFromDisk?.fileName).toBe("example-manual.pdf");
+    expect(recoveredFromDisk?.buffer.subarray(0, 5).toString()).toBe("%PDF-");
   });
 });

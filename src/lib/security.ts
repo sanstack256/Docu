@@ -237,12 +237,26 @@ export function isSafeIP(rawIp: string): boolean {
 }
 
 /**
+ * Normalizes user-entered URL strings, automatically prefixing https://
+ * if the user omitted a protocol scheme (e.g. "docs.python.org/3/").
+ */
+export function normalizeInputUrl(rawInput: string): string {
+  let trimmed = rawInput.trim();
+  if (!trimmed) return trimmed;
+  // If user entered without protocol, default to https://
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//i.test(trimmed)) {
+    trimmed = `https://${trimmed}`;
+  }
+  return trimmed;
+}
+
+/**
  * Validates a target URL structure, protocol, credentials, and hostname.
  */
 export function validateUrlStructure(inputUrl: string): URL {
   let parsed: URL;
   try {
-    parsed = new URL(inputUrl);
+    parsed = new URL(normalizeInputUrl(inputUrl));
   } catch {
     throw new SecurityError("Invalid URL format.");
   }
@@ -271,6 +285,11 @@ export function validateUrlStructure(inputUrl: string): URL {
     throw new SecurityError(`Access to internal hostname '${hostname}' is prohibited.`);
   }
 
+  // Must be an IP or contain a dot for a valid domain
+  if (!hostname.includes(".") && !net.isIP(hostname)) {
+    throw new SecurityError(`Invalid domain name: '${hostname}'. Must include a top-level domain (e.g. domain.com).`);
+  }
+
   // Check if hostname is an IP directly (IPv4 or IPv6)
   if (net.isIP(hostname)) {
     if (!isSafeIP(hostname)) {
@@ -280,6 +299,9 @@ export function validateUrlStructure(inputUrl: string): URL {
 
   return parsed;
 }
+
+// Cache verified safe DNS lookups for 60 seconds to eliminate redundant lookups and thread pool contention
+const dnsVerificationCache = new Map<string, { ips: string[]; expires: number }>();
 
 /**
  * Resolves the hostname via DNS and verifies that all resolved IP addresses are safe.
@@ -294,25 +316,49 @@ export async function assertSafeDestination(parsedUrl: URL): Promise<void> {
     return;
   }
 
-  let addresses: dns.LookupAddress[];
+  const now = Date.now();
+  const cached = dnsVerificationCache.get(hostname);
+  if (cached && cached.expires > now) {
+    for (const ip of cached.ips) {
+      if (!isSafeIP(ip)) {
+        throw new SecurityError(`Host ${hostname} resolves to blocked internal address (${ip}).`);
+      }
+    }
+    return;
+  }
+
+  let ips: string[] = [];
+
   try {
-    addresses = await dns.promises.lookup(hostname, { all: true });
-  } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    throw new SecurityError(`Failed to resolve DNS for ${hostname}: ${errorMsg}`);
+    const addresses = await dns.promises.lookup(hostname, { all: true });
+    if (addresses && addresses.length > 0) {
+      ips = addresses.map((a) => a.address);
+    }
+  } catch {
+    // Fallback to direct resolve4/resolve6 if lookup hits local threadpool contention
+    try {
+      const v4 = await dns.promises.resolve4(hostname).catch(() => []);
+      const v6 = await dns.promises.resolve6(hostname).catch(() => []);
+      ips = [...v4, ...v6];
+    } catch (fallbackErr: unknown) {
+      const msg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+      throw new Error(`Failed to resolve DNS for ${hostname}: ${msg}`);
+    }
   }
 
-  if (!addresses || addresses.length === 0) {
-    throw new SecurityError(`No IP addresses found for hostname ${hostname}`);
+  if (ips.length === 0) {
+    throw new Error(`Failed to resolve DNS for ${hostname}: No IP addresses found.`);
   }
 
-  for (const { address } of addresses) {
-    if (!isSafeIP(address)) {
+  for (const ip of ips) {
+    if (!isSafeIP(ip)) {
       throw new SecurityError(
-        `Host ${hostname} resolves to blocked internal/private address (${address}). Connection aborted.`
+        `Host ${hostname} resolves to blocked internal/private address (${ip}). Connection aborted.`
       );
     }
   }
+
+  dnsVerificationCache.set(hostname, { ips, expires: now + 60_000 });
 }
 
 export interface SafeFetchOptions {

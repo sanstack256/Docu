@@ -98,10 +98,13 @@ export default function DocuApp() {
     e.preventDefault();
     setError(null);
 
-    const trimmed = url.trim();
+    let trimmed = url.trim();
     if (!trimmed) {
       setError("Please enter a documentation website URL.");
       return;
+    }
+    if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//i.test(trimmed)) {
+      trimmed = `https://${trimmed}`;
     }
 
     try {
@@ -322,9 +325,10 @@ export default function DocuApp() {
               <div className="flex flex-col sm:flex-row gap-2">
                 <input
                   id="doc-url"
-                  type="url"
+                  type="text"
+                  inputMode="url"
                   required
-                  placeholder="https://docs.python.org/3/tutorial/"
+                  placeholder="https://docs.python.org/3/tutorial/ or docs.docker.com"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
                   aria-describedby="url-helper-text"
@@ -619,6 +623,8 @@ export default function DocuApp() {
                 <a
                   href={result.downloadUrl}
                   download={result.fileName}
+                  target="_self"
+                  rel="noopener noreferrer"
                   className={`inline-flex items-center space-x-2 ${
                     isPartialResult
                       ? "bg-amber-600 hover:bg-amber-700"
