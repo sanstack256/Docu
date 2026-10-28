@@ -755,6 +755,7 @@ function renderBlock(
     case "image": {
       doc.moveDown(0.4);
       const boxX = doc.page.margins.left;
+      const captionText = block.caption || block.alt;
 
       if (block.data) {
         const dims = getImageDimensions(block.data);
@@ -783,9 +784,9 @@ function renderBlock(
           });
           doc.y = imgY + targetH + 4;
 
-          if (block.alt) {
+          if (captionText) {
             doc.fillColor("#718096").fontSize(8.5).font("Helvetica-Oblique").text(
-              `Figure: ${block.alt}`,
+              `Figure: ${captionText}`,
               boxX,
               doc.y,
               { width: pageWidth, align: "center" }
@@ -799,28 +800,27 @@ function renderBlock(
         }
       }
 
-      // Clean reference box for unembedded/vector images (e.g. SVG)
+      // Clean reference card for unembedded or vector illustrations (no raw URLs)
       if (doc.y + 36 > maxContentY) {
         doc.addPage();
       }
       const refY = doc.y;
-      const label = block.alt ? `[Image: ${block.alt}]` : "[External Illustration / Diagram]";
-      doc.roundedRect(boxX, refY, pageWidth, 28, 3).fill("#f7fafc");
-      doc.roundedRect(boxX, refY, pageWidth, 28, 3).strokeColor("#e2e8f0").lineWidth(0.5).stroke();
-      doc.fillColor("#4a5568").fontSize(8.5).font("Helvetica-Bold").text(label, boxX + 10, refY + 5, {
-        width: pageWidth - 20,
+      const label = captionText ? `Illustration: ${captionText}` : "Illustration Reference";
+      doc.roundedRect(boxX, refY, pageWidth, 26, 3).fill("#f7fafc");
+      doc.roundedRect(boxX, refY, pageWidth, 26, 3).strokeColor("#e2e8f0").lineWidth(0.5).stroke();
+      doc.fillColor("#4a5568").fontSize(8.5).font("Helvetica").text(label, boxX + 10, refY + 7, {
+        width: pageWidth - 140,
         lineBreak: false,
         ellipsis: true,
       });
-      doc.fillColor("#3182ce").fontSize(8).font("Helvetica").text(block.src, boxX + 10, refY + 16, {
-        width: pageWidth - 20,
+      doc.fillColor("#3182ce").fontSize(8.5).font("Helvetica-Bold").text("View in browser ↗", boxX + pageWidth - 125, refY + 7, {
+        width: 115,
+        align: "right",
         link: block.src,
-        underline: true,
-        lineBreak: false,
-        ellipsis: true,
+        underline: false,
       });
       doc.x = boxX;
-      doc.y = refY + 32;
+      doc.y = refY + 30;
       doc.moveDown(0.35);
       break;
     }

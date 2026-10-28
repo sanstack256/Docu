@@ -5,6 +5,9 @@ import { isWithinDocScope, normalizeUrl } from "@/lib/crawler";
 import { extractPageContent, enrichPageImages, ExtractedPage } from "@/lib/extractor";
 import { generateDocumentationPDF } from "@/lib/pdf";
 import { getJob, updateJob, finalizeJobWithPDF } from "@/lib/jobs";
+import { getOrCreateSessionId, buildSessionCookieHeader } from "@/lib/session";
+import { consumeExportQuota } from "@/lib/quota";
+import { checkRateLimit, getClientIp, pruneStorageDirectory } from "@/lib/rateLimit";
 
 const ConvertSchema = z.object({
   jobId: z.string().uuid("Invalid job identifier"),
@@ -12,10 +15,18 @@ const ConvertSchema = z.object({
   documentTitle: z.string().max(140).optional(),
 });
 
-const CONCURRENCY_LIMIT = 3;
-
 export async function POST(request: Request) {
   try {
+    // 1. Rate Limiting Check (5 conversions per minute per IP)
+    const clientIp = getClientIp(request);
+    const rateLimit = checkRateLimit(`convert:${clientIp}`, 6);
+    if (!rateLimit.allowed) {
+      return NextResponse.json(
+        { error: "Rate limit exceeded. Please wait a moment before starting another conversion." },
+        { status: 429, headers: { "Retry-After": rateLimit.resetSeconds.toString() } }
+      );
+    }
+
     const json = await request.json();
     const parsed = ConvertSchema.safeParse(json);
 
@@ -27,14 +38,17 @@ export async function POST(request: Request) {
     }
 
     const { jobId, documentTitle } = parsed.data;
-    // Deduplicate selected URLs while preserving order
     const selectedUrls = Array.from(new Set(parsed.data.selectedUrls.map((u) => normalizeUrl(u))));
 
-    // Enforce Free plan limit: max 20 selected pages per export
-    if (selectedUrls.length > 20) {
+    // 2. Server-Enforced Session & Quota Check
+    const { sessionId, isNew } = getOrCreateSessionId(request);
+    const hasCustomTitle = Boolean(documentTitle && documentTitle.trim().length > 0);
+
+    const quotaResult = consumeExportQuota(sessionId, selectedUrls.length, hasCustomTitle);
+    if (!quotaResult.success) {
       return NextResponse.json(
-        { error: "Free tier limit exceeded: A maximum of 20 pages can be selected per export." },
-        { status: 400 }
+        { error: quotaResult.error, plan: quotaResult.plan },
+        { status: 403 }
       );
     }
 
@@ -43,7 +57,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Job not found or has expired." }, { status: 404 });
     }
 
-    // Security check: ensure all selected URLs belong to the job's documentation scope
+    // 3. Security check: ensure all selected URLs belong to the job's documentation scope
     for (const candidateUrl of selectedUrls) {
       if (!isWithinDocScope(candidateUrl, job.url)) {
         return NextResponse.json(
@@ -66,7 +80,9 @@ export async function POST(request: Request) {
     const allWarnings: string[] = [...job.warnings];
     let completedCount = 0;
 
-    // Bounded concurrency worker pool (max 3 concurrent requests)
+    // Concurrency: Pro gets priority 4 concurrent, Free gets 2 concurrent
+    const concurrency = quotaResult.plan === "pro" ? 4 : 2;
+
     let nextIndex = 0;
     const worker = async () => {
       while (nextIndex < selectedUrls.length) {
@@ -111,7 +127,7 @@ export async function POST(request: Request) {
     };
 
     const workers = Array.from(
-      { length: Math.min(CONCURRENCY_LIMIT, selectedUrls.length) },
+      { length: Math.min(concurrency, selectedUrls.length) },
       () => worker()
     );
     await Promise.all(workers);
@@ -153,7 +169,7 @@ export async function POST(request: Request) {
       siteTitle: job.siteTitle,
       sourceUrl: job.url,
       pages: extractedPages,
-      documentTitle: documentTitle?.trim() || undefined,
+      documentTitle: hasCustomTitle ? documentTitle?.trim() : undefined,
       failedPages,
       warnings: allWarnings,
     });
@@ -163,7 +179,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Failed to finalize generated PDF file." }, { status: 500 });
     }
 
-    return NextResponse.json({
+    // Prune storage in background
+    try {
+      pruneStorageDirectory();
+    } catch {
+      // Ignore
+    }
+
+    const response = NextResponse.json({
       jobId,
       state: finalizedJob.state,
       downloadToken: finalizedJob.downloadToken,
@@ -175,7 +198,15 @@ export async function POST(request: Request) {
       pagesExtracted: extractedPages.length,
       failedPages,
       warnings: allWarnings,
+      quotaRemaining: quotaResult.remaining,
+      plan: quotaResult.plan,
     });
+
+    if (isNew) {
+      response.headers.set("Set-Cookie", buildSessionCookieHeader(sessionId));
+    }
+
+    return response;
   } catch (err: unknown) {
     if (err instanceof SecurityError) {
       return NextResponse.json({ error: err.message }, { status: 403 });
