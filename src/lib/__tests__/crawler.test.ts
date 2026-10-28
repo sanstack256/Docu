@@ -1,26 +1,36 @@
 import { describe, it, expect } from "vitest";
 import {
   normalizeUrl,
+  getCanonicalDedupKey,
   isWithinDocScope,
   extractLinksAndTitle,
 } from "../crawler";
 
 describe("Crawler & Scope Filtering", () => {
-  describe("normalizeUrl", () => {
+  describe("normalizeUrl & getCanonicalDedupKey", () => {
     it("strips hash fragments", () => {
       expect(normalizeUrl("https://example.com/docs#heading-1")).toBe("https://example.com/docs");
       expect(normalizeUrl("https://example.com/docs/#intro")).toBe("https://example.com/docs");
     });
 
-    it("removes marketing and tracking query parameters", () => {
-      const url = "https://example.com/docs?utm_source=twitter&utm_medium=social&ref=producthunt&page=1";
+    it("removes marketing and tracking query parameters and sorts remaining params", () => {
+      const url = "https://example.com/docs?z=2&utm_source=twitter&a=1&ref=producthunt";
       const normalized = normalizeUrl(url);
-      expect(normalized).toBe("https://example.com/docs?page=1");
+      expect(normalized).toBe("https://example.com/docs?a=1&z=2");
     });
 
     it("normalizes redundant slashes and trailing slash", () => {
       expect(normalizeUrl("https://example.com/docs/guide/")).toBe("https://example.com/docs/guide");
       expect(normalizeUrl("https://example.com///docs//guide")).toBe("https://example.com/docs/guide");
+    });
+
+    it("produces matching canonical deduplication keys for /index.html and directory root", () => {
+      expect(getCanonicalDedupKey("https://docs.example.com/3/tutorial/index.html")).toBe(
+        getCanonicalDedupKey("https://docs.example.com/3/tutorial/")
+      );
+      expect(getCanonicalDedupKey("https://docs.example.com/index.htm")).toBe(
+        getCanonicalDedupKey("https://docs.example.com/")
+      );
     });
   });
 
@@ -52,18 +62,23 @@ describe("Crawler & Scope Filtering", () => {
   });
 
   describe("extractLinksAndTitle", () => {
-    it("extracts clean title and resolves internal links", () => {
+    it("extracts clean title without permalink markers and prioritizes navigation links with titles", () => {
       const sampleHtml = `
         <!DOCTYPE html>
         <html>
           <head><title>Getting Started - MyProject Docs</title></head>
           <body>
             <header><a href="/home">Home</a></header>
+            <nav class="sidebar">
+              <h3>Core Concepts</h3>
+              <ul>
+                <li><a href="/guide/install">1. Installation Guide</a></li>
+                <li><a href="configuration.html">2. Configuration Reference</a></li>
+              </ul>
+            </nav>
             <main>
-              <h1>Getting Started</h1>
-              <a href="/guide/install">Installation</a>
-              <a href="configuration.html">Configuration</a>
-              <a href="https://external.com">External</a>
+              <h1>Getting Started<a class="headerlink" href="#getting-started">¶</a></h1>
+              <p>Read the <a href="/guide/install">install docs</a> or visit <a href="https://external.com">External</a>.</p>
               <a href="#section">Anchor</a>
               <a href="mailto:docs@example.com">Email</a>
             </main>
@@ -76,6 +91,15 @@ describe("Crawler & Scope Filtering", () => {
       expect(result.links).toContain("https://docs.example.com/guide/install");
       expect(result.links).toContain("https://docs.example.com/guide/configuration.html");
       expect(result.links).toContain("https://external.com/");
+
+      // Verify navigation link was prioritized and retained its descriptive title
+      const installDetail = result.detailedLinks.find(
+        (d) => d.url === "https://docs.example.com/guide/install"
+      );
+      expect(installDetail).toBeDefined();
+      expect(installDetail?.isNav).toBe(true);
+      expect(installDetail?.title).toBe("1. Installation Guide");
+
       // Anchors, mailto, etc. excluded
       expect(result.links.some((l) => l.includes("mailto"))).toBe(false);
       expect(result.links.some((l) => l.includes("#section"))).toBe(false);

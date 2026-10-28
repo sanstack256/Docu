@@ -1,25 +1,66 @@
 import { describe, it, expect } from "vitest";
+import zlib from "node:zlib";
 import { extractPageContent } from "../extractor";
 import { generateDocumentationPDF } from "../pdf";
 import { createJob, updateJob, finalizeJobWithPDF, getPDFByDownloadToken } from "../jobs";
 
+/**
+ * Extracts and decompresses all FlateDecode streams in a PDF buffer and decodes
+ * hex-encoded TJ text operators so tests can inspect the actual rendered PDF text.
+ */
+function decompressPdfTextStreams(pdfBuffer: Buffer): string {
+  const raw = pdfBuffer.toString("latin1");
+  const decodedChunks: string[] = [raw];
+
+  let cursor = 0;
+  while (cursor < raw.length) {
+    const streamStart = raw.indexOf("stream\n", cursor);
+    if (streamStart === -1) break;
+    const dataStart = streamStart + 7;
+    const streamEnd = raw.indexOf("\nendstream", dataStart);
+    if (streamEnd === -1) break;
+
+    const compressedSlice = pdfBuffer.subarray(dataStart, streamEnd);
+    try {
+      const inflated = zlib.inflateSync(compressedSlice).toString("latin1");
+      decodedChunks.push(inflated);
+
+      // Reconstruct continuous strings from PDFKit [<hex> kern <hex> ...] TJ arrays
+      const tjMatches = inflated.match(/\[[^\]]+\]\s*TJ/g) || [];
+      for (const tj of tjMatches) {
+        const hexParts = tj.match(/<([0-9a-fA-F]+)>/g) || [];
+        const textLine = hexParts
+          .map((h) => Buffer.from(h.slice(1, -1), "hex").toString("latin1"))
+          .join("");
+        decodedChunks.push(textLine);
+      }
+    } catch {
+      // Not a zlib stream or uncompressed
+    }
+    cursor = streamEnd + 10;
+  }
+
+  return decodedChunks.join("\n");
+}
+
 describe("End-to-End Pipeline Integration", () => {
-  it("orchestrates job creation, extraction, PDF rendering, and token-based download", async () => {
+  it("orchestrates job creation, extraction, PDF rendering, and verifies decompressed PDF text content", async () => {
     // 1. Create Job
     const rootUrl = "https://example.org/docs";
     const job = createJob(rootUrl);
     expect(job.id).toBeDefined();
     expect(job.state).toBe("queued");
 
-    // 2. Mock discovered pages
+    // 2. Extract realistic multi-page documentation HTML
     const mockHtmlPage1 = `
       <html>
-        <head><title>Getting Started</title></head>
+        <head><title>Getting Started — Example Docs</title></head>
         <body>
           <main>
-            <h1>Getting Started</h1>
-            <p>Welcome to Version 1 of Docu.</p>
-            <pre><code>npm install docu</code></pre>
+            <h1>Getting Started<a class="headerlink" href="#start">¶</a></h1>
+            <p>Welcome to Version 2 of Docu. Visit <a href="https://example.org/docs/install">Installation</a>.</p>
+            <h2>Quick Installation</h2>
+            <pre><code class="language-bash">npm install docu-cli --save</code></pre>
           </main>
         </body>
       </html>
@@ -27,11 +68,16 @@ describe("End-to-End Pipeline Integration", () => {
 
     const mockHtmlPage2 = `
       <html>
-        <head><title>API Usage</title></head>
+        <head><title>API Usage — Example Docs</title></head>
         <body>
           <main>
             <h1>API Usage</h1>
+            <h2>Endpoint Reference</h2>
             <p>Here is how to query the endpoints safely.</p>
+            <table>
+              <thead><tr><th>Header</th><th>Required</th></tr></thead>
+              <tbody><tr><td>X-Docu-Token</td><td>Yes</td></tr></tbody>
+            </table>
           </main>
         </body>
       </html>
@@ -54,7 +100,17 @@ describe("End-to-End Pipeline Integration", () => {
       pages: [p1, p2],
     });
 
-    expect(pageCount).toBeGreaterThanOrEqual(3);
+    expect(pageCount).toBeGreaterThanOrEqual(4);
+
+    // Decompress PDF streams and verify actual source content is rendered in the PDF
+    const decodedPdf = decompressPdfTextStreams(buffer);
+    expect(decodedPdf).toContain("Table of Contents");
+    expect(decodedPdf).toContain("Getting Started");
+    expect(decodedPdf).toContain("Quick Installation");
+    expect(decodedPdf).toContain("npm install docu-cli --save");
+    expect(decodedPdf).toContain("Endpoint Reference");
+    expect(decodedPdf).toContain("X-Docu-Token");
+    expect(decodedPdf).toContain("Page 2 of");
 
     // 4. Finalize Job
     const finalized = finalizeJobWithPDF(job.id, buffer, "example-manual.pdf");
