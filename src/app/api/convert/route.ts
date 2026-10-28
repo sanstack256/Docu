@@ -40,11 +40,23 @@ export async function POST(request: Request) {
     const { jobId, documentTitle } = parsed.data;
     const selectedUrls = Array.from(new Set(parsed.data.selectedUrls.map((u) => normalizeUrl(u))));
 
-    // 2. Server-Enforced Session & Quota Check
-    const { sessionId, isNew } = getOrCreateSessionId(request);
-    const hasCustomTitle = Boolean(documentTitle && documentTitle.trim().length > 0);
+    // 2. Retrieve job first
+    const job = getJob(jobId);
+    if (!job) {
+      return NextResponse.json({ error: "Job not found or has expired." }, { status: 404 });
+    }
 
-    const quotaResult = consumeExportQuota(sessionId, selectedUrls.length, hasCustomTitle);
+    // 3. Server-Enforced Session & Quota Check
+    const { sessionId, isNew } = getOrCreateSessionId(request);
+
+    // A title is only custom if provided, non-empty, and strictly differs from default siteTitle
+    const isCustomTitle = Boolean(
+      documentTitle &&
+      documentTitle.trim().length > 0 &&
+      documentTitle.trim().toLowerCase() !== job.siteTitle.trim().toLowerCase()
+    );
+
+    const quotaResult = consumeExportQuota(sessionId, selectedUrls.length, isCustomTitle);
     if (!quotaResult.success) {
       return NextResponse.json(
         { error: quotaResult.error, plan: quotaResult.plan },
@@ -52,12 +64,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const job = getJob(jobId);
-    if (!job) {
-      return NextResponse.json({ error: "Job not found or has expired." }, { status: 404 });
-    }
-
-    // 3. Security check: ensure all selected URLs belong to the job's documentation scope
+    // 4. Security check: ensure all selected URLs belong to the job's documentation scope
     for (const candidateUrl of selectedUrls) {
       if (!isWithinDocScope(candidateUrl, job.url)) {
         return NextResponse.json(
@@ -169,7 +176,7 @@ export async function POST(request: Request) {
       siteTitle: job.siteTitle,
       sourceUrl: job.url,
       pages: extractedPages,
-      documentTitle: hasCustomTitle ? documentTitle?.trim() : undefined,
+      documentTitle: isCustomTitle ? documentTitle?.trim() : undefined,
       failedPages,
       warnings: allWarnings,
     });

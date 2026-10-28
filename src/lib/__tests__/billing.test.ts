@@ -120,3 +120,4 @@ describe("Cryptographic Stripe Webhook & Billing Verification", () => {
     expect(getQuotaStatus(testSession).plan).toBe("free");
   });
 });
+

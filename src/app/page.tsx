@@ -120,6 +120,11 @@ export default function DocuApp() {
     const interval = setInterval(async () => {
       try {
         const res = await fetch(`/api/jobs/${jobId}`, { cache: "no-store" });
+        if (res.status === 404) {
+          active = false;
+          clearInterval(interval);
+          return;
+        }
         if (!res.ok || !active) return;
         const jobData = await res.json();
         if (!active) return;

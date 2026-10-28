@@ -28,3 +28,4 @@ export async function GET(request: Request) {
   // Redirect back to main application with confirmation
   return NextResponse.redirect(new URL("/?upgraded=true", url.origin));
 }
+

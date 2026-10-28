@@ -53,3 +53,4 @@ export function buildSessionCookieHeader(sessionId: string): string {
   const maxAge = 365 * 24 * 60 * 60;
   return `${SESSION_COOKIE_NAME}=${encodeURIComponent(signed)}; Path=/; Max-Age=${maxAge}; HttpOnly; SameSite=Lax`;
 }
+
