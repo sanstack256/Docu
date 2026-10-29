@@ -412,7 +412,7 @@ export default function DocuApp() {
                 </button>
               </div>
             )}
-            <span className="text-slate-400 font-mono hidden sm:inline">v3.0</span>
+            <span className="text-slate-400 font-mono hidden sm:inline">v4.0</span>
           </div>
         </div>
       </header>
@@ -1012,8 +1012,26 @@ export default function DocuApp() {
       )}
 
       {/* Footer */}
-      <footer className="border-t border-slate-200 py-4 text-center text-xs text-slate-500 bg-white">
-        <p>Docu — Universal Deterministic Offline Manual Converter • Respects site policies & copyright</p>
+      <footer className="border-t border-slate-200 py-6 text-center text-xs text-slate-500 bg-white">
+        <div className="max-w-4xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <p>Docu — Universal Deterministic Offline Manual Converter • Respects site policies & copyright</p>
+          <div className="flex items-center space-x-4 text-xs">
+            <button
+              type="button"
+              onClick={() => setShowPricingModal(true)}
+              className="text-slate-600 hover:text-slate-900 underline"
+            >
+              Pricing
+            </button>
+            <a href="/privacy" className="text-slate-600 hover:text-slate-900 underline">
+              Privacy Policy
+            </a>
+            <a href="/terms" className="text-slate-600 hover:text-slate-900 underline">
+              Terms of Service
+            </a>
+            <span className="text-slate-400">PDFs purged after 1h</span>
+          </div>
+        </div>
       </footer>
     </div>
   );

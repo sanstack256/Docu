@@ -250,12 +250,22 @@ export function getPDFByDownloadToken(token: string): { fileName: string; buffer
     const tokenMetaPath = path.join(TOKENS_DIR, `${token}.json`);
 
     if (fs.existsSync(pdfPath)) {
-      const buffer = fs.readFileSync(pdfPath);
       let fileName = "documentation-manual.pdf";
       if (fs.existsSync(tokenMetaPath)) {
         const meta = JSON.parse(fs.readFileSync(tokenMetaPath, "utf-8"));
+        // Enforce 1-hour expiration on disk reads
+        if (Date.now() - meta.createdAt > RETENTION_MS) {
+          try {
+            fs.unlinkSync(pdfPath);
+            fs.unlinkSync(tokenMetaPath);
+          } catch {
+            // Ignore
+          }
+          return undefined;
+        }
         if (meta.fileName) fileName = meta.fileName;
       }
+      const buffer = fs.readFileSync(pdfPath);
       return { fileName, buffer };
     }
   } catch {

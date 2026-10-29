@@ -451,7 +451,7 @@ export async function safeFetch(
           const response = await fetch(currentUrl, {
             method: "GET",
             headers: {
-              "User-Agent": "Docu/2.0 (Documentation Offline Converter; +https://github.com/sanstack256/Docu)",
+              "User-Agent": "Docu/4.0 (Documentation Offline Converter; +https://github.com/sanstack256/Docu)",
               Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
               ...headers,
             },
